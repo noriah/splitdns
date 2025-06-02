@@ -1,0 +1,111 @@
+package main
+
+import (
+	"encoding/json"
+	"io"
+	"log"
+	"net"
+	"os"
+
+	"github.com/miekg/dns"
+)
+
+type Config struct {
+	ListenAddress string       `json:"listen"`
+	Nameservers   []Nameserver `json:"servers"`
+}
+
+type Nameserver struct {
+	Domain  string   `json:"domain"`
+	Servers []string `json:"servers"`
+}
+
+// creates a handler that forwards requests to the servers given, trying each
+// after failure of the previous. on failure of all servers, replys to request
+// with dns.RcodeServerFailure
+func createForwardHandler(servers []string) dns.HandlerFunc {
+	return func(w dns.ResponseWriter, r *dns.Msg) {
+		reply := dns.Msg{}
+		reply.SetReply(r)
+
+		for _, s := range servers {
+			res, err := dns.Exchange(r, s)
+			if err != nil {
+				log.Printf("got err attempting query %s: %s\n", s, err)
+				continue
+			}
+
+			res.CopyTo(&reply)
+
+			w.WriteMsg(&reply)
+			return
+		}
+
+		reply.SetRcode(r, dns.RcodeServerFailure)
+		w.WriteMsg(&reply)
+	}
+}
+
+// registers dns servers for domains in nameservers of config, then starts the
+// server on the address in listen of config
+func dnsServer(config *Config) error {
+	for _, e := range config.Nameservers {
+		dns.HandleFunc(e.Domain, createForwardHandler(e.Servers))
+	}
+
+	addr, err := net.ResolveUDPAddr("udp", config.ListenAddress)
+	if err != nil {
+		return err
+	}
+
+	socket, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		return err
+	}
+
+	err = dns.ActivateAndServe(nil, socket, dns.DefaultServeMux)
+
+	return err
+}
+
+// reads the configuration from `path`
+func readConfig(path string) (Config, error) {
+
+	f, err := os.Open(path)
+	if err != nil {
+		return Config{}, err
+	}
+
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return Config{}, err
+	}
+
+	var config Config
+
+	if err := json.Unmarshal(data, &config); err != nil {
+		return Config{}, err
+	}
+
+	return config, nil
+}
+
+// runs splitdns
+func main() {
+
+	if len(os.Args) < 2 {
+		log.Fatalf("path to config required\n")
+	}
+
+	config, err := readConfig(os.Args[1])
+
+	if err != nil {
+		log.Fatalf("config read failed: %s\n", err)
+	}
+
+	if err := dnsServer(&config); err != nil {
+		log.Fatalf("dns server quit with non-zero: %s\n", err)
+	}
+}
