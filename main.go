@@ -11,12 +11,12 @@ import (
 )
 
 type Config struct {
-	ListenAddress string       `json:"listen"`
-	Nameservers   []Nameserver `json:"servers"`
+	ListenAddress string `json:"listen"`
+	Zones         []Zone `json:"zones"`
 }
 
-type Nameserver struct {
-	Domain  string   `json:"domain"`
+type Zone struct {
+	Name    string   `json:"name"`
 	Servers []string `json:"servers"`
 }
 
@@ -49,8 +49,8 @@ func createForwardHandler(servers []string) dns.HandlerFunc {
 // registers dns servers for domains in nameservers of config, then starts the
 // server on the address in listen of config
 func dnsServer(config *Config) error {
-	for _, e := range config.Nameservers {
-		dns.HandleFunc(e.Domain, createForwardHandler(e.Servers))
+	for _, e := range config.Zones {
+		dns.HandleFunc(e.Name, createForwardHandler(e.Servers))
 	}
 
 	addr, err := net.ResolveUDPAddr("udp", config.ListenAddress)
