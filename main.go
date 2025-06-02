@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -20,25 +19,24 @@ type Zone struct {
 	Servers []string `json:"servers"`
 }
 
-// creates a handler that forwards requests to the servers given, trying each
-// after failure of the previous. on failure of all servers, replys to request
-// with dns.RcodeServerFailure
-func createForwardHandler(servers []string) dns.HandlerFunc {
+// returns a handler that forwards requests to the servers given, trying each
+// next server only after failure of the previous. on failure of all servers,
+// replies to request with dns.RcodeServerFailure
+func nameHandler(servers []string) dns.HandlerFunc {
 	return func(w dns.ResponseWriter, r *dns.Msg) {
 		reply := dns.Msg{}
 		reply.SetReply(r)
 
 		for _, s := range servers {
 			res, err := dns.Exchange(r, s)
-			if err != nil {
-				log.Printf("got err attempting query %s: %s\n", s, err)
-				continue
+
+			if err == nil {
+				res.CopyTo(&reply)
+				w.WriteMsg(&reply)
+				return
 			}
 
-			res.CopyTo(&reply)
-
-			w.WriteMsg(&reply)
-			return
+			log.Printf("got err attempting query %s: %s\n", s, err)
 		}
 
 		reply.SetRcode(r, dns.RcodeServerFailure)
@@ -46,11 +44,11 @@ func createForwardHandler(servers []string) dns.HandlerFunc {
 	}
 }
 
-// registers dns servers for domains in nameservers of config, then starts the
-// server on the address in listen of config
+// registers handlers for all Zones in config, then starts a dns server on the
+// ListenAddress in config
 func dnsServer(config *Config) error {
 	for _, e := range config.Zones {
-		dns.HandleFunc(e.Name, createForwardHandler(e.Servers))
+		dns.HandleFunc(e.Name, nameHandler(e.Servers))
 	}
 
 	addr, err := net.ResolveUDPAddr("udp", config.ListenAddress)
@@ -63,38 +61,23 @@ func dnsServer(config *Config) error {
 		return err
 	}
 
-	err = dns.ActivateAndServe(nil, socket, dns.DefaultServeMux)
-
-	return err
+	return dns.ActivateAndServe(nil, socket, dns.DefaultServeMux)
 }
 
 // reads the configuration from `path`
-func readConfig(path string) (Config, error) {
-
-	f, err := os.Open(path)
+func readConfig(path string) (config Config, err error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return Config{}, err
+		return
 	}
 
-	defer f.Close()
+	err = json.Unmarshal(data, &config)
 
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return Config{}, err
-	}
-
-	var config Config
-
-	if err := json.Unmarshal(data, &config); err != nil {
-		return Config{}, err
-	}
-
-	return config, nil
+	return
 }
 
 // runs splitdns
 func main() {
-
 	if len(os.Args) < 2 {
 		log.Fatalf("path to config required\n")
 	}
